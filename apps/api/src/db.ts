@@ -21,7 +21,11 @@ export class Database {
         ? new Pool({ connectionString: process.env.DATABASE_URL })
         : new PGlite(memory ? undefined : resolve(root, ".local/postgres"));
     const db = new Database(driver);
-    for (const file of ["001_initial.sql", "002_tokens.sql"])
+    for (const file of [
+      "001_initial.sql",
+      "002_tokens.sql",
+      "003_dev_builds.sql",
+    ])
       await db.exec(
         await readFile(resolve(root, "infra/migrations", file), "utf8"),
       );

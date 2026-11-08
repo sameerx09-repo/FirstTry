@@ -36,6 +36,7 @@ type TokenScope = "cli" | "deploy";
 // and request review. Publishing, pausing and analytics need cli or a session.
 const DEPLOY: TokenScope[] = ["cli", "deploy"];
 const CLI: TokenScope[] = ["cli"];
+const DEV_BUILDS_KEPT = 20;
 const DEVICE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const redact = (s: string) =>
   s
@@ -557,7 +558,7 @@ export async function createApp(
       const reviewer = await user(req);
       if (reviewer.role !== "admin") await own(req, body.appId);
       rows = await db.query(
-        "SELECT a.*,v.id version_id,v.bundle_hash,v.files,v.manifest,v.review_status FROM apps a JOIN versions v ON v.app_id=a.id JOIN users u ON u.id=a.developer_id WHERE a.id=$1 AND v.id=$2 AND a.status='active' AND u.active=true",
+        "SELECT a.*,v.id version_id,v.bundle_hash,v.files,v.manifest,v.review_status FROM apps a JOIN versions v ON v.app_id=a.id JOIN users u ON u.id=a.developer_id WHERE a.id=$1 AND ($2='dev' AND v.dev=true OR v.id=$2) AND a.status='active' AND u.active=true ORDER BY v.created_at DESC LIMIT 1",
         [body.appId, body.versionId],
       );
     } else
@@ -589,6 +590,7 @@ export async function createApp(
       expiresAt,
       keyId: keys.keyId,
       preview: body.preview,
+      dev: v.dev === true,
       capabilities: v.manifest.capabilities,
     };
     return {
@@ -794,14 +796,17 @@ export async function createApp(
   app.get("/api/v1/developer/apps/:id/versions", async (req) => {
     await own(req, id(req), DEPLOY);
     return db.query(
-      "SELECT v.id,v.semver,v.bundle_hash,v.manifest,v.review_status,v.review_reason,v.created_at,EXISTS(SELECT 1 FROM releases r WHERE r.app_id=v.app_id AND r.version_id=v.id) AS published FROM versions v WHERE v.app_id=$1 ORDER BY v.created_at DESC",
+      "SELECT v.id,v.semver,v.bundle_hash,v.manifest,v.review_status,v.review_reason,v.created_at,EXISTS(SELECT 1 FROM releases r WHERE r.app_id=v.app_id AND r.version_id=v.id) AS published FROM versions v WHERE v.app_id=$1 AND v.dev=false ORDER BY v.created_at DESC",
       [id(req)],
     );
   });
   app.post("/api/v1/developer/apps/:id/upload", async (req) => {
     const { u, a } = await own(req, id(req), DEPLOY);
     const body = z
-      .object({ zipBase64: z.string().max(2800000) })
+      .object({
+        zipBase64: z.string().max(2800000),
+        dev: z.boolean().default(false),
+      })
       .parse(req.body);
     let bundle;
     try {
@@ -813,6 +818,51 @@ export async function createApp(
       fail(400, "Manifest id must match app slug");
     await store.put(bundle!.hash, Buffer.from(body.zipBase64, "base64"));
     const vid = randomUUID();
+    if (body.dev) {
+      // Dev builds are throwaway previews for live reload: mutable-by-replacement,
+      // never reviewable or publishable, and only the newest DEV_BUILDS_KEPT are kept.
+      const newest = (
+        await db.query(
+          "SELECT id,bundle_hash FROM versions WHERE app_id=$1 AND dev=true ORDER BY created_at DESC,id LIMIT 1",
+          [a.id],
+        )
+      )[0];
+      if (newest?.bundle_hash === bundle!.hash)
+        return {
+          id: newest.id,
+          status: "dev",
+          hash: bundle!.hash,
+          reused: true,
+        };
+      await db.transaction(async (tx) => {
+        await tx.query(
+          "INSERT INTO versions(id,app_id,semver,bundle_hash,manifest,files,review_status,dev) VALUES($1,$2,$3,$4,$5,$6,'dev',true)",
+          [
+            vid,
+            a.id,
+            bundle!.manifest.version,
+            bundle!.hash,
+            JSON.stringify(bundle!.manifest),
+            JSON.stringify(bundle!.inventory),
+          ],
+        );
+        const old = (
+          await tx.query(
+            "SELECT id FROM versions WHERE app_id=$1 AND dev=true ORDER BY created_at DESC,id OFFSET $2",
+            [a.id, DEV_BUILDS_KEPT],
+          )
+        ).map((r) => r.id);
+        for (const stale of old) {
+          await tx.query(
+            "DELETE FROM events WHERE session_id IN(SELECT id FROM sessions WHERE version_id=$1)",
+            [stale],
+          );
+          await tx.query("DELETE FROM sessions WHERE version_id=$1", [stale]);
+          await tx.query("DELETE FROM versions WHERE id=$1", [stale]);
+        }
+      });
+      return { id: vid, status: "dev", hash: bundle!.hash, reused: false };
+    }
     await db.query(
       "INSERT INTO versions(id,app_id,semver,bundle_hash,manifest,files) VALUES($1,$2,$3,$4,$5,$6)",
       [
@@ -826,6 +876,29 @@ export async function createApp(
     );
     await audit(u.id, "upload-validated", a.id, vid);
     return { id: vid, status: "validated", hash: bundle!.hash };
+  });
+  // Long-poll: resolves as soon as a dev build newer than `after` exists.
+  app.get("/api/v1/developer/apps/:id/dev/latest", async (req) => {
+    const { a } = await own(req, id(req), DEPLOY);
+    const q = z
+      .object({
+        after: z.string().max(80).optional(),
+        wait: z.coerce.number().min(0).max(25).default(0),
+      })
+      .parse(req.query);
+    const deadline = Date.now() + q.wait * 1000;
+    for (;;) {
+      const latest = (
+        await db.query(
+          "SELECT id FROM versions WHERE app_id=$1 AND dev=true ORDER BY created_at DESC,id LIMIT 1",
+          [a.id],
+        )
+      )[0];
+      if (latest && latest.id !== q.after) return { versionId: latest.id };
+      if (Date.now() >= deadline || req.raw.destroyed)
+        return { versionId: null };
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
   });
   app.post(
     "/api/v1/developer/apps/:id/versions/:vid/submit-review",
