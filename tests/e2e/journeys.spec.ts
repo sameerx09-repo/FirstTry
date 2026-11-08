@@ -328,6 +328,11 @@ test("CLI device login is approved from the dashboard and previews render a QR",
   await expect(
     page.getByRole("link", { name: "Open in FirstTry" }),
   ).toHaveAttribute("href", "firsttry://preview/abc-123?version=def-456");
+  await page.goto("/preview?app=abc-123&dev=1");
+  await expect(page.getByText("Live reload on your phone")).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Open in FirstTry" }),
+  ).toHaveAttribute("href", "firsttry://preview/abc-123?dev=1");
   await page.goto("/preview?app=%3Cscript%3E&version=x");
   await expect(
     page.getByText("Missing or invalid preview link."),

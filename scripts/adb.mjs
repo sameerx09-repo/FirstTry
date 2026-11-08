@@ -90,12 +90,12 @@ export function validateAppLink(uri) {
   if (
     typeof uri !== "string" ||
     uri.length > 256 ||
-    !/^firsttry:\/\/(?:mini\/[a-z0-9][a-z0-9-]{1,63}|preview\/[a-zA-Z0-9-]{1,80}\?version=[a-zA-Z0-9-]{1,80})$/.test(
+    !/^firsttry:\/\/(?:mini\/[a-z0-9][a-z0-9-]{1,63}|preview\/[a-zA-Z0-9-]{1,80}\?(?:version=[a-zA-Z0-9-]{1,80}|dev=1))$/.test(
       uri,
     )
   ) {
     throw new Error(
-      "Expected firsttry://mini/<slug> or firsttry://preview/<app-id>?version=<version-id>. Other schemes, extra parameters and shell characters are rejected.",
+      "Expected firsttry://mini/<slug> or firsttry://preview/<app-id>?version=<version-id> or ?dev=1. Other schemes, extra parameters and shell characters are rejected.",
     );
   }
   return uri;

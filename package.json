@@ -27,6 +27,7 @@
     "android:test": "node scripts/adb.mjs test",
     "test:adb": "node --test scripts/adb.test.mjs",
     "test:cli": "pnpm --filter @firsttry/mini-cli test",
+    "test:live-reload": "pnpm --filter @firsttry/api exec tsx ../../scripts/live-reload-smoke.mts",
     "android:open": "node scripts/adb.mjs open-link",
     "android:register-links": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-android-links.ps1",
     "android:unregister-links": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-android-links.ps1 -Unregister",

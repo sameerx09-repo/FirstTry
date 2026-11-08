@@ -68,6 +68,7 @@ test("desktop links accept only constrained FirstTry routes and reject command i
   for (const uri of [
     "firsttry://mini/rentalflow",
     "firsttry://preview/seed-color-clash?version=seed-v1",
+    "firsttry://preview/a96542bc-01a9-4032-b7d0-dbee77ba1d9d?dev=1",
     "firsttry://preview/a96542bc-01a9-4032-b7d0-dbee77ba1d9d?version=b75f203b-1e71-4201-9cd3-c52c218219e0",
   ])
     assert.equal(validateAppLink(uri), uri);
@@ -83,6 +84,9 @@ test("desktop links accept only constrained FirstTry routes and reject command i
     "firsttry://mini/rentalflow#fragment",
     "firsttry://mini/rentalflow\n",
     "firsttry://preview/app",
+    "firsttry://preview/app?dev=2",
+    "firsttry://preview/app?dev=1&version=v1",
+    "firsttry://preview/app?dev=1&extra=bad",
   ])
     assert.throws(() => validateAppLink(uri));
 });

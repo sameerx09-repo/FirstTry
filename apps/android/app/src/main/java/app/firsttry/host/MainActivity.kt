@@ -25,6 +25,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -226,7 +229,10 @@ fun FirstTry(link: Uri?, linkSequence: Int = 0) {
                 }
             } else if (link.scheme == "firsttry" && link.host == "preview") {
                 val id = link.lastPathSegment
-                val version = link.getQueryParameter("version")
+                // ?dev=1 opens the newest live-reload build of the app.
+                val version =
+                    link.getQueryParameter("version")
+                        ?: if (link.getQueryParameter("dev") == "1") "dev" else null
                 if (id != null && version != null) {
                     val a =
                         apps.find { it.id == id }
@@ -245,6 +251,42 @@ fun FirstTry(link: Uri?, linkSequence: Int = 0) {
                             )
                     launchApp(a, version)
                 }
+            }
+        }
+    }
+    // Live reload (debug host only): while a dev build is open, long-poll for a newer
+    // build and swap to a fresh session when one is uploaded by `firsttry dev`.
+    LaunchedEffect(active?.grant?.optString("sessionId")) {
+        val current = active
+        if (!BuildConfig.DEBUG || current == null || !current.grant.optBoolean("dev")) {
+            return@LaunchedEffect
+        }
+        val appId = current.grant.getString("appId")
+        var after = current.grant.getString("versionId")
+        while (isActive) {
+            try {
+                val latest =
+                    JSONObject(
+                        api.request("/developer/apps/$appId/dev/latest?after=$after&wait=10")
+                    )
+                if (!latest.isNull("versionId")) {
+                    val next = loadMini(api, appId, "dev")
+                    val previous = active
+                    active = next
+                    after = next.grant.getString("versionId")
+                    if (previous != null)
+                        runCatching {
+                            api.request(
+                                "/sessions/${previous.grant.getString("sessionId")}/end",
+                                "POST",
+                                JSONObject(),
+                                previous.token,
+                            )
+                        }
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                delay(3000)
             }
         }
     }
@@ -381,18 +423,21 @@ fun FirstTry(link: Uri?, linkSequence: Int = 0) {
                     }
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 if (active != null) {
-                    MiniRuntime(
-                        active!!,
-                        api,
-                        Modifier.fillMaxSize(),
-                        onClose = { closeApp() },
-                        onFeedback = { feedback = activeApp },
-                        onError = { message ->
-                            active = null
-                            activeApp = null
-                            error = message
-                        },
-                    )
+                    // Keyed by session so a live-reload swap rebuilds the WebView.
+                    key(active!!.grant.getString("sessionId")) {
+                        MiniRuntime(
+                            active!!,
+                            api,
+                            Modifier.fillMaxSize(),
+                            onClose = { closeApp() },
+                            onFeedback = { feedback = activeApp },
+                            onError = { message ->
+                                active = null
+                                activeApp = null
+                                error = message
+                            },
+                        )
+                    }
                 } else if (selected != null) {
                     val a = selected!!
                     Column(

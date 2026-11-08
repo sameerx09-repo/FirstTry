@@ -44,6 +44,14 @@ A deploy token can create apps, upload versions and request review. It cannot pu
 
 `.github/actions/deploy` wraps this for GitHub: it deploys the pull request head, optionally submits for review, and keeps one preview comment up to date. See `.github/workflows/example-preview.yml`. The action runs the CLI from FirstTry's own source until a package is published, and it has not yet been exercised on GitHub.
 
+## Live reload
+
+`pnpm cli dev [project]` builds the project, uploads it as a **dev build**, then watches for changes. Each save rebuilds (running `buildScript` if configured), validates and uploads again; identical output is skipped and a failed build or validation is printed without stopping the watcher. It prints a stable link, `firsttry://preview/<app-id>?dev=1`, as text and as a QR code, plus a `/preview?app=...&dev=1` page.
+
+Open that link in the **debug** Android host signed in as the developer. While a dev build is open the host long-polls `GET /developer/apps/:id/dev/latest`, and when a newer build exists it opens a fresh preview session and reloads the WebView. State inside the mini-app is not preserved (a full reload, not hot module replacement). An edit reaches the poller in under a second on a local API; the Android emulator test exercises three consecutive reloads. The release host does not run the reload loop.
+
+Dev builds are throwaway: they never appear in the version list, cannot be submitted for review or published, are only reachable through the owner's (or a moderator's) preview sessions, and only the newest 20 per app are kept. `firsttry.json` `rootDirectory` works with `dev` too. Use `pnpm cli dev --once` to upload a single dev build and exit.
+
 ## Monorepos
 
 Set `rootDirectory` in the repository's `firsttry.json` to deploy a subfolder; `buildScript` runs there and `outputDirectory` is relative to it:
@@ -87,6 +95,7 @@ The current limits are 2 MB compressed, 6 MB expanded, 64 files and 2 MB per fil
 | GitHub/GitLab/Bitbucket import or push-to-deploy                            | Not implemented                                        |
 | Cloud builds, deployment queues and live build logs                         | Not implemented                                        |
 | Device-code CLI login, scoped deploy tokens, QR/web preview pages           | Implemented and exercised locally                      |
+| Live reload (`cli dev`) on the debug Android host                           | Implemented; emulator-tested                           |
 | GitHub Action preview comments (.github/actions/deploy)                     | Written; not yet run on GitHub                         |
 | Team invitations, GitHub App PR checks                                      | Not implemented                                        |
 | Self-service account creation, public CLI package                           | Not implemented                                        |

@@ -13,8 +13,11 @@ function Preview() {
   const params = useSearchParams(),
     app = params.get("app") ?? "",
     version = params.get("version") ?? "",
-    valid = ID.test(app) && ID.test(version),
-    link = `firsttry://preview/${app}?version=${version}`,
+    live = params.get("dev") === "1",
+    valid = ID.test(app) && (live || ID.test(version)),
+    link = live
+      ? `firsttry://preview/${app}?dev=1`
+      : `firsttry://preview/${app}?version=${version}`,
     svg = useMemo(() => {
       if (!valid) return "";
       const qr = qrcode(0, "M");
@@ -27,7 +30,9 @@ function Preview() {
       <Link href="/" className="brand">
         ✳ FirstTry
       </Link>
-      <h1>Open this preview on your phone</h1>
+      <h1>
+        {live ? "Live reload on your phone" : "Open this preview on your phone"}
+      </h1>
       {valid ? (
         <>
           <div
@@ -50,6 +55,8 @@ function Preview() {
           <p className="footnote">
             Sign into the FirstTry host as the app&apos;s developer. Previews
             are private; this link does nothing for anyone else.
+            {live &&
+              " Keep `firsttry dev` running: the open app reloads on every save (debug host)."}
           </p>
         </>
       ) : (
