@@ -51,7 +51,8 @@ const zipFor = (slug: string) =>
         network: { allowedDomains: [] },
         assets: {},
       }),
-      "index.html": '<!doctype html><title>T</title><script src="a.js"></script>',
+      "index.html":
+        '<!doctype html><title>T</title><script src="a.js"></script>',
       "a.js": 'document.body.textContent="ok";',
     }),
   ).toString("base64");
@@ -74,7 +75,12 @@ async function deviceLogin(approveWith = dev) {
       )
     ).status,
   ).toBe(200);
-  return { start, token: await call("/auth/device/token", "POST", { deviceCode: start.deviceCode }) };
+  return {
+    start,
+    token: await call("/auth/device/token", "POST", {
+      deviceCode: start.deviceCode,
+    }),
+  };
 }
 
 beforeAll(async () => {
@@ -109,8 +115,14 @@ describe("device-code login", () => {
 
   it("rejects unknown codes and non-developers", async () => {
     expect(
-      (await call("/auth/device/approve", "POST", { userCode: "ZZZZ-ZZZZ" }, dev))
-        .status,
+      (
+        await call(
+          "/auth/device/approve",
+          "POST",
+          { userCode: "ZZZZ-ZZZZ" },
+          dev,
+        )
+      ).status,
     ).toBe(404);
     const start = (await call("/auth/device", "POST", {})).data;
     expect(
@@ -234,8 +246,15 @@ describe("deploy tokens", () => {
       (await call("/admin/reviews", "GET", undefined, "", deploy)).status,
     ).toBe(401);
     expect(
-      (await call("/auth/device/approve", "POST", { userCode: "AAAA-AAAA" }, "", deploy))
-        .status,
+      (
+        await call(
+          "/auth/device/approve",
+          "POST",
+          { userCode: "AAAA-AAAA" },
+          "",
+          deploy,
+        )
+      ).status,
     ).toBe(401);
     expect(
       (await call("/developer/apps", "GET", undefined, "", "ft_bogus")).status,

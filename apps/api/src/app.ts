@@ -338,7 +338,12 @@ export async function createApp(
         [hash],
       );
       if (!claimed[0]) fail(400, "expired_token");
-      const issued = await issueToken(claimed[0].user_id, "CLI login", "cli", 30);
+      const issued = await issueToken(
+        claimed[0].user_id,
+        "CLI login",
+        "cli",
+        30,
+      );
       await audit(claimed[0].user_id, "cli-login");
       return { token: issued.token, expiresAt: issued.expiresAt };
     },
@@ -366,7 +371,12 @@ export async function createApp(
       )
     )[0].n;
     if (count >= 20) fail(409, "Token limit reached; revoke unused tokens");
-    const issued = await issueToken(u.id, body.name, "deploy", body.expiresInDays);
+    const issued = await issueToken(
+      u.id,
+      body.name,
+      "deploy",
+      body.expiresInDays,
+    );
     await audit(u.id, "token-create");
     return issued;
   });

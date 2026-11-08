@@ -18,6 +18,12 @@ export default function Login() {
           e.preventDefault();
           try {
             const u = await api("/auth/login", "POST", { email, password });
+            // Only same-site relative paths are honoured as a return target.
+            const next = new URLSearchParams(location.search).get("next");
+            if (next && /^\/(?![/\\])/.test(next)) {
+              location.href = next;
+              return;
+            }
             location.href =
               u.role === "admin"
                 ? "/admin"

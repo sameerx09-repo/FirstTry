@@ -151,7 +151,7 @@ pnpm cli status
 
 For a TypeScript/Vite starter, use `pnpm cli init hello-vite --vite`, run `pnpm --dir hello-vite install` and `pnpm --dir hello-vite build`, then run `pnpm cli deploy hello-vite`. The generated firsttry.json builds and selects dist automatically; `--skip-build` reuses existing output. Module-preload polyfills are disabled to preserve the runtime's no-network policy. Static starters remain dependency-free.
 
-CLI login is stored in ignored `.firsttry/session.json` in the invocation directory. Do not commit or share it. Deploy prints a private Android preview link. Sign into the host as the owner or moderator to use it. In the dashboard, submit the version; in the moderator console, review and approve; then publish the approved version. Changed bundles require a new semantic version and fresh public approval.
+Run `pnpm cli login` with no email for a device login (approve the printed code at `/device`); `FIRSTTRY_TOKEN` supplies a CI deploy token instead (`pnpm cli token create`). CLI login is stored in ignored `.firsttry/session.json` in the invocation directory. Do not commit or share it. Deploy prints a private Android preview link. Sign into the host as the owner or moderator to use it. In the dashboard, submit the version; in the moderator console, review and approve; then publish the approved version. Changed bundles require a new semantic version and fresh public approval.
 
 ## Tests and mock run
 

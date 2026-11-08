@@ -4,14 +4,18 @@ import {
   writeFile,
   readdir,
   realpath,
+  rm,
 } from "node:fs/promises";
 import { resolve, relative } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { spawnSync } from "node:child_process";
 import {
   readDeploymentConfig,
   outputPath,
+  projectRoot,
   findReusableVersion,
 } from "./deployment.js";
+import { qrText } from "./qr.js";
 import { zipSync } from "fflate";
 import { validateBundle } from "@firsttry/shared/bundle";
 const args = process.argv.slice(2),
@@ -19,8 +23,11 @@ const args = process.argv.slice(2),
   api = process.env.FIRSTTRY_API ?? "http://127.0.0.1:3001/api/v1",
   cwd = process.env.INIT_CWD ?? process.cwd(),
   configDir = resolve(cwd, ".firsttry");
-async function request(path: string, method = "GET", body?: unknown) {
-  let session = "";
+// Credentials: FIRSTTRY_TOKEN (CI) wins, then the saved device-login token,
+// then the legacy password-login cookie.
+async function credentials(): Promise<Record<string, string>> {
+  if (process.env.FIRSTTRY_TOKEN)
+    return { authorization: "Bearer " + process.env.FIRSTTRY_TOKEN };
   try {
     const saved = JSON.parse(
       await readFile(resolve(configDir, "session.json"), "utf8"),
@@ -28,16 +35,21 @@ async function request(path: string, method = "GET", body?: unknown) {
     if (
       saved.api === api ||
       (!saved.api && api === "http://127.0.0.1:3001/api/v1")
-    )
-      session = saved.cookie;
+    ) {
+      if (saved.token) return { authorization: "Bearer " + saved.token };
+      if (saved.cookie) return { cookie: saved.cookie };
+    }
   } catch {}
+  return {};
+}
+async function request(path: string, method = "GET", body?: unknown) {
   const response = await fetch(api + path, {
     method,
     signal: AbortSignal.timeout(30000),
     headers: {
-      "content-type": "application/json",
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
       "x-firsttry-request": "1",
-      cookie: session,
+      ...(await credentials()),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -190,15 +202,24 @@ try {
   } else if (command === "validate" || command === "deploy") {
     const dir = resolve(cwd, args.find((a) => !a.startsWith("--")) ?? ".");
     for (const flag of args.filter((arg) => arg.startsWith("--"))) {
-      if (!["--skip-build", "--submit"].includes(flag))
+      if (!["--skip-build", "--submit", "--no-qr"].includes(flag))
         throw new Error("Unknown option " + flag);
     }
     const config = await readDeploymentConfig(dir);
-    const output = outputPath(dir, config);
+    // rootDirectory lets a repository-root firsttry.json point at a subfolder.
+    const project = projectRoot(dir, config);
+    const output = outputPath(project, config);
+    {
+      const realBase = await realpath(dir);
+      projectRoot(realBase, {
+        outputDirectory: ".",
+        rootDirectory: relative(realBase, await realpath(project)) || ".",
+      });
+    }
     if (config.buildScript && !args.includes("--skip-build")) {
       console.error("Building project: " + config.buildScript);
       const build = spawnSync(process.execPath, ["--run", config.buildScript], {
-        cwd: dir,
+        cwd: project,
         stdio: ["inherit", "inherit", "inherit"],
         windowsHide: true,
       });
@@ -208,9 +229,9 @@ try {
         );
     }
     // A symlinked output must not package files from outside the project.
-    outputPath(await realpath(dir), {
+    outputPath(await realpath(project), {
       outputDirectory:
-        relative(await realpath(dir), await realpath(output)) || ".",
+        relative(await realpath(project), await realpath(output)) || ".",
     });
     console.error("Validating " + output);
     const zip = await zipDirectory(output);
@@ -269,6 +290,12 @@ try {
         visibility: "private",
         reused: !!existing,
         previewLink: "firsttry://preview/" + app.id + "?version=" + upload.id,
+        previewPage:
+          (process.env.FIRSTTRY_WEB ?? "http://127.0.0.1:3000") +
+          "/preview?app=" +
+          app.id +
+          "&version=" +
+          upload.id,
       };
       await saveReceipt(deployment);
       if (args.includes("--submit") && upload.status === "validated") {
@@ -287,7 +314,90 @@ try {
       console.error(
         "Private preview ready. Sign in as the developer in the Android host. Next: pnpm cli inspect / pnpm cli submit. Public publication requires approval.",
       );
+      if (!args.includes("--no-qr") && process.stderr.isTTY)
+        console.error(
+          "\nScan with a phone that has the FirstTry host installed:\n" +
+            qrText(deployment.previewLink) +
+            "\n" +
+            deployment.previewLink,
+        );
     }
+  } else if (command === "login" && !args[0]) {
+    // Browser/device login: approve the code in the web dashboard.
+    const start = (await request("/auth/device", "POST", {})).data;
+    console.error(
+      "Open " +
+        start.verificationUri +
+        "?code=" +
+        start.userCode +
+        "\nand approve this code: " +
+        start.userCode +
+        "\nWaiting for approval (Ctrl+C to cancel)...",
+    );
+    const deadline = Date.now() + start.expiresIn * 1000;
+    let token: { token: string; expiresAt: number } | undefined;
+    while (!token && Date.now() < deadline) {
+      await sleep(start.interval * 1000);
+      try {
+        token = (
+          await request("/auth/device/token", "POST", {
+            deviceCode: start.deviceCode,
+          })
+        ).data;
+      } catch (error: any) {
+        if (error.message !== "authorization_pending") throw error;
+      }
+    }
+    if (!token) throw new Error("Login code expired. Run login again.");
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      resolve(configDir, "session.json"),
+      JSON.stringify({
+        token: token.token,
+        api,
+        expiresAt: token.expiresAt,
+      }),
+      { mode: 0o600 },
+    );
+    const me = (await request("/me")).data;
+    console.log("Signed in as " + me.name);
+  } else if (command === "whoami") {
+    const me = (await request("/me")).data;
+    console.log(me.name + " (" + me.role + ")");
+  } else if (command === "logout") {
+    // Revoke the stored token server-side, then forget it locally.
+    try {
+      if (!process.env.FIRSTTRY_TOKEN)
+        await request("/developer/tokens/current", "DELETE");
+    } catch {}
+    await rm(resolve(configDir, "session.json"), { force: true });
+    console.log("Signed out.");
+  } else if (command === "token") {
+    const sub = args.shift();
+    if (sub === "create") {
+      const name = args.find((a) => !a.startsWith("--"));
+      const days = args.indexOf("--days");
+      if (!name) throw new Error("Usage: token create <name> [--days 90]");
+      const made = (
+        await request("/developer/tokens", "POST", {
+          name,
+          ...(days >= 0 ? { expiresInDays: Number(args[days + 1]) } : {}),
+        })
+      ).data;
+      console.log(made.token);
+      console.error(
+        "Deploy token '" +
+          made.name +
+          "' created (previews and review requests only). Store it as the FIRSTTRY_TOKEN secret in CI; it is shown once.",
+      );
+    } else if (sub === "list")
+      console.log(
+        JSON.stringify((await request("/developer/tokens")).data, null, 2),
+      );
+    else if (sub === "revoke" && args[0]) {
+      await request("/developer/tokens/" + args[0], "DELETE");
+      console.log("Token revoked.");
+    } else throw new Error("Usage: token create <name> | list | revoke <id>");
   } else if (command === "login") {
     const email = args[0],
       password = process.env.FIRSTTRY_PASSWORD;
@@ -380,7 +490,7 @@ try {
     );
   else
     console.log(
-      "FirstTry local CLI: init <slug> [--vite] | validate <project> | login <email> | deploy <project> [--submit] [--skip-build] | inspect | submit | publish [version-id] | rollback <approved-version-id> | status",
+      "FirstTry CLI: init <slug> [--vite] | login [email] | logout | whoami | token create|list|revoke | validate <project> | deploy <project> [--submit] [--skip-build] [--no-qr] | inspect | submit | publish [version-id] | rollback <approved-version-id> | status\nCI: set FIRSTTRY_TOKEN (a deploy token) and FIRSTTRY_API.",
     );
 } catch (e: any) {
   console.error("FirstTry: " + e.message);

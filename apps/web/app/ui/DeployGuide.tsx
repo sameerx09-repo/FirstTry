@@ -6,7 +6,7 @@ export default function DeployGuide({
   slug?: string;
 }) {
   const [copied, setCopied] = useState(false);
-  const commands = `pnpm cli init ${slug} --vite\npnpm --dir ${slug} install\n# Sign in once from this workspace; set FIRSTTRY_PASSWORD in your terminal\npnpm cli login developer@firsttry.local\npnpm cli deploy ${slug}\npnpm cli inspect\npnpm cli submit`;
+  const commands = `pnpm cli init ${slug} --vite\npnpm --dir ${slug} install\n# Sign in once; approve the code in this dashboard at /device\npnpm cli login\npnpm cli deploy ${slug}\npnpm cli inspect\npnpm cli submit`;
   return (
     <section
       className="workspace-card deploy-guide"

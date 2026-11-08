@@ -11,7 +11,9 @@ import {
   findReusableVersion,
   outputPath,
   parseDeploymentConfig,
+  projectRoot,
 } from "../src/deployment.js";
+import { qrText } from "../src/qr.js";
 
 test("deployment settings reject traversal, absolute paths and command strings", () => {
   const root = resolve("fixture");
@@ -191,4 +193,41 @@ test("CLI builds, deploys, resumes, submits and enforces approval before publish
     await new Promise<void>((done) => server.close(() => done()));
     await rm(folder, { recursive: true, force: true });
   }
+});
+test("rootDirectory selects a subfolder and cannot escape the checkout", () => {
+  const base = resolve("repo");
+  const config = parseDeploymentConfig({
+    rootDirectory: "rentalflow/mobile-superapp",
+    outputDirectory: "dist",
+    buildScript: "build",
+  });
+  assert.equal(
+    projectRoot(base, config),
+    join(base, "rentalflow", "mobile-superapp"),
+  );
+  assert.equal(
+    outputPath(projectRoot(base, config), config),
+    join(base, "rentalflow", "mobile-superapp", "dist"),
+  );
+  assert.equal(
+    projectRoot(base, parseDeploymentConfig({ outputDirectory: "." })),
+    base,
+  );
+  for (const rootDirectory of ["../elsewhere", "/abs", "C:\\abs", "a\\..\\.."])
+    assert.throws(
+      () =>
+        projectRoot(
+          base,
+          parseDeploymentConfig({ outputDirectory: ".", rootDirectory }),
+        ),
+      undefined,
+      rootDirectory,
+    );
+});
+test("preview QR codes render as a scannable block", () => {
+  const text = qrText("firsttry://preview/app?version=v");
+  const lines = text.split("\n");
+  assert.ok(lines.length > 10);
+  assert.ok(lines.every((line) => line.startsWith("\x1b[47m")));
+  assert.match(text, /[█▀▄]/);
 });

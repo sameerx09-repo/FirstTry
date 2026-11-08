@@ -1,0 +1,90 @@
+name: FirstTry deploy
+description: Build a mini-app, upload it as a private FirstTry preview, and comment the preview on the pull request.
+inputs:
+  api-url:
+    description: FirstTry API base URL, for example https://api.example.com/api/v1
+    required: true
+  token:
+    description: Deploy token from `firsttry token create`. Store it as a repository secret.
+    required: true
+  web-url:
+    description: FirstTry web origin used for the shareable preview page.
+    required: false
+    default: ""
+  project:
+    description: Directory of the mini-app relative to the workspace (or set rootDirectory in firsttry.json).
+    required: false
+    default: "."
+  submit:
+    description: Also request moderator review for the uploaded version.
+    required: false
+    default: "false"
+  comment:
+    description: Comment the preview on the pull request.
+    required: false
+    default: "true"
+outputs:
+  version-id:
+    description: Uploaded version id
+    value: ${{ steps.deploy.outputs.version_id }}
+  status:
+    description: Review status of the version
+    value: ${{ steps.deploy.outputs.status }}
+  preview-page:
+    description: Web page with a QR code for the private preview
+    value: ${{ steps.deploy.outputs.preview_page }}
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 11.25.0
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 24
+    - name: Install the FirstTry CLI
+      shell: bash
+      run: pnpm install --frozen-lockfile --filter "@firsttry/mini-cli..." --dir "${{ github.action_path }}/../../.."
+    - name: Deploy preview
+      id: deploy
+      shell: bash
+      env:
+        FIRSTTRY_API: ${{ inputs.api-url }}
+        FIRSTTRY_TOKEN: ${{ inputs.token }}
+        FIRSTTRY_WEB: ${{ inputs.web-url }}
+        PROJECT: ${{ inputs.project }}
+        SUBMIT: ${{ inputs.submit }}
+      run: |
+        set -euo pipefail
+        echo "::add-mask::$FIRSTTRY_TOKEN"
+        [ -n "$FIRSTTRY_WEB" ] || unset FIRSTTRY_WEB
+        cli="${{ github.action_path }}/../../../packages/mini-cli"
+        flags=(--no-qr)
+        [ "$SUBMIT" = "true" ] && flags+=(--submit)
+        # INIT_CWD keeps the receipt (.firsttry/) in the checked-out project.
+        INIT_CWD="$GITHUB_WORKSPACE" "$cli/node_modules/.bin/tsx" "$cli/src/index.ts" \
+          deploy "$GITHUB_WORKSPACE/$PROJECT" "${flags[@]}" | tee deployment.json
+        {
+          echo "version_id=$(jq -r .id deployment.json)"
+          echo "status=$(jq -r .status deployment.json)"
+          echo "preview_page=$(jq -r .previewPage deployment.json)"
+        } >> "$GITHUB_OUTPUT"
+        rm -f deployment.json
+    - name: Comment on the pull request
+      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PREVIEW: ${{ steps.deploy.outputs.preview_page }}
+        STATUS: ${{ steps.deploy.outputs.status }}
+        SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        gh pr comment "${{ github.event.pull_request.number }}" --edit-last --create-if-none --body "$(cat <<EOF
+        ### FirstTry preview
+        Commit \`${SHA::7}\` is uploaded as a **private preview** (review status: \`$STATUS\`).
+
+        [Open the preview page and QR code]($PREVIEW)
+
+        Sign into the FirstTry host as the app's developer to open it. Publishing still requires moderator approval.
+        EOF
+        )"

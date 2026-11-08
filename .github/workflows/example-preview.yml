@@ -1,0 +1,22 @@
+# Example: push or open a PR in a mini-app repository and get a private phone preview.
+# Copy this into the mini-app's own repository (adjust the `uses:` path to wherever
+# FirstTry's .github/actions/deploy lives) and add repository secrets:
+#   FIRSTTRY_TOKEN  from `pnpm cli token create github-actions`
+#   FIRSTTRY_API    for example https://api.example.com/api/v1
+# It is disabled here (workflow_dispatch only) so FirstTry's own CI never deploys.
+name: Mini-app preview (example)
+on: workflow_dispatch
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/deploy
+        with:
+          api-url: ${{ secrets.FIRSTTRY_API }}
+          token: ${{ secrets.FIRSTTRY_TOKEN }}
+          project: .
+          submit: "false"

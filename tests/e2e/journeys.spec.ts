@@ -283,3 +283,53 @@ test("developer upload and moderator approval become a public release", async ({
   ).toBeVisible();
   await context.close();
 });
+test("CLI device login is approved from the dashboard and previews render a QR", async ({
+  page,
+}) => {
+  const headers = { "x-firsttry-request": "1" };
+  const start = await (
+    await page.request.post("/api/v1/auth/device", { headers, data: {} })
+  ).json();
+  await page.goto("/device?code=" + start.userCode);
+  await expect(page.getByText("Sign in as a developer first.")).toBeVisible();
+  await page.getByRole("link", { name: "Sign in", exact: true }).click();
+  await page
+    .getByLabel("Email", { exact: true })
+    .fill("developer@firsttry.local");
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page).toHaveURL(/\/device\?code=/);
+  await expect(page.getByLabel("Code")).toHaveValue(start.userCode);
+  const pending = await page.request.post("/api/v1/auth/device/token", {
+    headers,
+    data: { deviceCode: start.deviceCode },
+  });
+  expect(pending.status()).toBe(428);
+  await page.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect(page.getByText("Approved.")).toBeVisible();
+  const issued = await page.request.post("/api/v1/auth/device/token", {
+    headers,
+    data: { deviceCode: start.deviceCode },
+  });
+  expect(issued.status()).toBe(200);
+  expect((await issued.json()).token).toMatch(/^ft_/);
+  // Open-redirect guard: only same-site paths are honoured after login.
+  await page.request.post("/api/v1/auth/logout", { headers, data: {} });
+  await page.goto("/login?next=//evil.example");
+  await page
+    .getByLabel("Email", { exact: true })
+    .fill("developer@firsttry.local");
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page).toHaveURL(/\/developer$/);
+
+  await page.goto("/preview?app=abc-123&version=def-456");
+  await expect(page.getByRole("img", { name: /QR code/ })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Open in FirstTry" }),
+  ).toHaveAttribute("href", "firsttry://preview/abc-123?version=def-456");
+  await page.goto("/preview?app=%3Cscript%3E&version=x");
+  await expect(
+    page.getByText("Missing or invalid preview link."),
+  ).toBeVisible();
+});
