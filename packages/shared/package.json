@@ -1,0 +1,21 @@
+{
+  "name": "@firsttry/shared",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./bundle": "./src/bundle.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.3.6",
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

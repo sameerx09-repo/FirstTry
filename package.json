@@ -1,0 +1,45 @@
+{
+  "name": "firsttry",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web \"pnpm --filter @firsttry/api dev\" \"pnpm --filter @firsttry/web dev\"",
+    "build": "pnpm --filter @firsttry/shared build && pnpm --filter @firsttry/mini-sdk build && pnpm --filter @firsttry/mini-cli build && pnpm --filter @firsttry/api build && pnpm --filter @firsttry/web build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm --filter @firsttry/api test",
+    "test:e2e": "playwright test",
+    "cli": "pnpm --filter @firsttry/mini-cli start",
+    "seed": "pnpm --filter @firsttry/api seed",
+    "format": "prettier --write .",
+    "lint": "prettier --check .",
+    "android:doctor": "node scripts/adb.mjs doctor",
+    "android:devices": "node scripts/adb.mjs devices",
+    "android:connect": "node scripts/adb.mjs connect",
+    "android:install": "node scripts/adb.mjs install",
+    "android:reverse": "node scripts/adb.mjs reverse",
+    "android:launch": "node scripts/adb.mjs launch",
+    "android:run": "node scripts/adb.mjs run",
+    "android:logs": "node scripts/adb.mjs logs",
+    "android:test": "node scripts/adb.mjs test",
+    "test:adb": "node --test scripts/adb.test.mjs",
+    "test:cli": "pnpm --filter @firsttry/mini-cli test",
+    "android:open": "node scripts/adb.mjs open-link",
+    "android:register-links": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-android-links.ps1",
+    "android:unregister-links": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-android-links.ps1 -Unregister",
+    "android:emulator": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/emulator.ps1",
+    "android:demo": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/emulator.ps1 -App rentalflow"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3",
+    "tsx": "^4.21.0",
+    "@types/node": "^24.0.0",
+    "prettier": "^3.8.0"
+  },
+  "type": "module"
+}

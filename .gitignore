@@ -1,0 +1,16 @@
+node_modules/
+.next/
+dist/
+.env
+.local/
+.firsttry/
+*.log
+playwright-report/
+test-results/
+.gradle/
+**/build/
+local.properties
+*.jks
+hs_err_pid*
+output/
+*.tsbuildinfo

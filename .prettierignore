@@ -1,0 +1,15 @@
+node_modules
+.local
+.next
+dist
+build
+.gradle
+pnpm-lock.yaml
+output
+playwright-report
+test-results
+miniapp_superapp_codex_master_spec.md
+docs/IMPLEMENTATION_PLAN.md
+apps/web/next-env.d.ts
+apps/android/gradle
+*.batAGENTS.md

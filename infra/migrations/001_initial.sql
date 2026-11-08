@@ -1,0 +1,18 @@
+CREATE TABLE IF NOT EXISTS users(id text PRIMARY KEY,email text UNIQUE NOT NULL,name text NOT NULL,role text NOT NULL CHECK(role IN ('consumer','developer','admin')),password_hash text NOT NULL,active boolean NOT NULL DEFAULT true);
+CREATE TABLE IF NOT EXISTS auth_sessions(token_hash text PRIMARY KEY,user_id text NOT NULL REFERENCES users(id),expires_at bigint NOT NULL);
+CREATE TABLE IF NOT EXISTS apps(id text PRIMARY KEY,developer_id text NOT NULL REFERENCES users(id),slug text UNIQUE NOT NULL,title text NOT NULL,summary text NOT NULL,category text NOT NULL,icon text NOT NULL DEFAULT '◈',color text NOT NULL DEFAULT '#07a160',status text NOT NULL DEFAULT 'active',featured boolean NOT NULL DEFAULT false,created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS versions(id text PRIMARY KEY,app_id text NOT NULL REFERENCES apps(id),semver text NOT NULL,bundle_hash text NOT NULL,manifest jsonb NOT NULL,files jsonb NOT NULL,review_status text NOT NULL DEFAULT 'validated',review_reason text NOT NULL DEFAULT '',seed boolean NOT NULL DEFAULT false,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(app_id,semver),UNIQUE(app_id,id));
+CREATE TABLE IF NOT EXISTS releases(app_id text PRIMARY KEY REFERENCES apps(id),version_id text NOT NULL,published_at timestamptz NOT NULL DEFAULT now(),FOREIGN KEY(app_id,version_id) REFERENCES versions(app_id,id));
+CREATE TABLE IF NOT EXISTS sessions(id text PRIMARY KEY,app_id text NOT NULL REFERENCES apps(id),version_id text NOT NULL,subject text NOT NULL,expires_at bigint NOT NULL,ended_at timestamptz,preview boolean NOT NULL DEFAULT false,created_at timestamptz NOT NULL DEFAULT now(),FOREIGN KEY(app_id,version_id) REFERENCES versions(app_id,id));
+CREATE TABLE IF NOT EXISTS events(id text PRIMARY KEY,session_id text NOT NULL REFERENCES sessions(id),name text NOT NULL,props jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS saves(subject text NOT NULL,app_id text NOT NULL REFERENCES apps(id),PRIMARY KEY(subject,app_id));
+CREATE TABLE IF NOT EXISTS blocks(subject text NOT NULL,developer_id text NOT NULL REFERENCES users(id),PRIMARY KEY(subject,developer_id));
+CREATE TABLE IF NOT EXISTS feedback(id text PRIMARY KEY,subject text NOT NULL,app_id text NOT NULL REFERENCES apps(id),version_id text NOT NULL,rating text NOT NULL CHECK(rating IN ('up','down')),body text NOT NULL,created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS reports(id text PRIMARY KEY,subject text NOT NULL,app_id text NOT NULL REFERENCES apps(id),version_id text,category text NOT NULL,detail text NOT NULL,status text NOT NULL DEFAULT 'open',created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS audit(id text PRIMARY KEY,actor text NOT NULL,action text NOT NULL,app_id text,version_id text,reason text NOT NULL DEFAULT '',created_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS events_session ON events(session_id);
+CREATE INDEX IF NOT EXISTS sessions_app ON sessions(app_id,version_id);
+CREATE INDEX IF NOT EXISTS versions_app ON versions(app_id);
+CREATE OR REPLACE FUNCTION protect_bundle() RETURNS trigger AS $$ BEGIN IF NEW.bundle_hash<>OLD.bundle_hash OR NEW.manifest<>OLD.manifest OR NEW.files<>OLD.files OR NEW.app_id<>OLD.app_id OR NEW.semver<>OLD.semver THEN RAISE EXCEPTION 'Immutable version'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS immutable_bundle ON versions;
+CREATE TRIGGER immutable_bundle BEFORE UPDATE ON versions FOR EACH ROW EXECUTE FUNCTION protect_bundle();
