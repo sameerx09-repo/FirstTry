@@ -1,7 +1,7 @@
 import Fastify, { type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
 import rateLimit from "@fastify/rate-limit";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   listingSchema,
@@ -31,6 +31,12 @@ class HttpError extends Error {
 const fail = (status: number, message: string): never => {
   throw new HttpError(status, message);
 };
+type TokenScope = "cli" | "deploy";
+// cli tokens act as the developer; deploy tokens (CI) can only create previews
+// and request review. Publishing, pausing and analytics need cli or a session.
+const DEPLOY: TokenScope[] = ["cli", "deploy"];
+const CLI: TokenScope[] = ["cli"];
+const DEVICE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const redact = (s: string) =>
   s
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email removed]")
@@ -60,7 +66,30 @@ export async function createApp(
         });
   });
   const now = () => Math.floor(Date.now() / 1000);
-  async function user(req: FastifyRequest, role?: string) {
+  // Bearer tokens are honoured only by routes that list the scopes they accept;
+  // every other route stays cookie-only. A bad token never falls back to a cookie.
+  async function user(
+    req: FastifyRequest,
+    role?: string,
+    tokenScopes: TokenScope[] = [],
+  ) {
+    const bearer = req.headers.authorization;
+    if (tokenScopes.length && bearer?.startsWith("Bearer ft_")) {
+      const hash = sha(bearer.slice(7));
+      const rows = await db.query(
+        "SELECT u.*,t.scope token_scope FROM api_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=$1 AND t.expires_at>$2 AND u.active=true",
+        [hash, now()],
+      );
+      const t = rows[0];
+      if (!t || !tokenScopes.includes(t.token_scope))
+        fail(401, "Invalid, expired or insufficient token");
+      if (role && t.role !== role) fail(403, "Role not permitted");
+      await db.query(
+        "UPDATE api_tokens SET last_used_at=now() WHERE token_hash=$1",
+        [hash],
+      );
+      return t;
+    }
     const token = req.cookies.ft_session;
     const rows = token
       ? await db.query(
@@ -84,8 +113,12 @@ export async function createApp(
       fail(401, "Start a guest session first");
     return "guest:" + guest;
   }
-  async function own(req: FastifyRequest, id: string) {
-    const u = await user(req, "developer");
+  async function own(
+    req: FastifyRequest,
+    id: string,
+    tokenScopes: TokenScope[] = [],
+  ) {
+    const u = await user(req, "developer", tokenScopes);
     const rows = await db.query(
       "SELECT * FROM apps WHERE id=$1 AND developer_id=$2",
       [id, u.id],
@@ -222,8 +255,140 @@ export async function createApp(
     return { ok: true };
   });
   app.get("/api/v1/me", async (req) => {
-    const u = await user(req);
+    const u = await user(req, undefined, DEPLOY);
     return { id: u.id, name: u.name, role: u.role };
+  });
+  // --- CLI / CI authentication -------------------------------------------
+  const issueToken = async (
+    userId: string,
+    name: string,
+    scope: TokenScope,
+    days: number,
+  ) => {
+    const token = "ft_" + randomBytes(32).toString("base64url");
+    const expiresAt = now() + days * 86400;
+    const tokenId = randomUUID();
+    await db.query(
+      "INSERT INTO api_tokens(id,token_hash,user_id,name,scope,expires_at) VALUES($1,$2,$3,$4,$5,$6)",
+      [tokenId, sha(token), userId, name, scope, expiresAt],
+    );
+    return { id: tokenId, token, name, scope, expiresAt };
+  };
+  const normalizeCode = (code: string) =>
+    code.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  // Device flow (RFC 8628 style): the CLI shows a code, the developer approves
+  // it in the signed-in web dashboard, and the CLI polls for a token. No
+  // password ever passes through the terminal.
+  app.post(
+    "/api/v1/auth/device",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async () => {
+      const deviceCode = randomBytes(32).toString("base64url");
+      let code = "";
+      for (const b of randomBytes(8)) code += DEVICE_ALPHABET[b % 32];
+      const userCode = code.slice(0, 4) + "-" + code.slice(4);
+      await db.query("DELETE FROM device_codes WHERE expires_at<$1", [now()]);
+      await db.query(
+        "INSERT INTO device_codes(device_hash,user_code,expires_at) VALUES($1,$2,$3)",
+        [sha(deviceCode), normalizeCode(userCode), now() + 600],
+      );
+      return {
+        deviceCode,
+        userCode,
+        verificationUri:
+          (process.env.WEB_ORIGIN ?? "http://127.0.0.1:3000") + "/device",
+        expiresIn: 600,
+        interval: 2,
+      };
+    },
+  );
+  app.post(
+    "/api/v1/auth/device/approve",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (req) => {
+      const u = await user(req, "developer");
+      const body = z.object({ userCode: z.string().max(20) }).parse(req.body);
+      const rows = await db.query(
+        "UPDATE device_codes SET user_id=$1,approved=true WHERE user_code=$2 AND expires_at>$3 AND approved=false RETURNING user_code",
+        [u.id, normalizeCode(body.userCode), now()],
+      );
+      if (!rows[0]) fail(404, "Code not found or expired");
+      await audit(u.id, "device-approve");
+      return { approved: true };
+    },
+  );
+  app.post(
+    "/api/v1/auth/device/token",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (req) => {
+      const body = z
+        .object({ deviceCode: z.string().min(20).max(100) })
+        .parse(req.body);
+      const hash = sha(body.deviceCode);
+      const row = (
+        await db.query("SELECT * FROM device_codes WHERE device_hash=$1", [
+          hash,
+        ])
+      )[0];
+      if (!row || row.expires_at <= now()) fail(400, "expired_token");
+      if (!row.approved) fail(428, "authorization_pending");
+      // Single use: the row is consumed even if issuing fails afterwards.
+      const claimed = await db.query(
+        "DELETE FROM device_codes WHERE device_hash=$1 RETURNING user_id",
+        [hash],
+      );
+      if (!claimed[0]) fail(400, "expired_token");
+      const issued = await issueToken(claimed[0].user_id, "CLI login", "cli", 30);
+      await audit(claimed[0].user_id, "cli-login");
+      return { token: issued.token, expiresAt: issued.expiresAt };
+    },
+  );
+  app.get("/api/v1/developer/tokens", async (req) =>
+    db.query(
+      "SELECT id,name,scope,created_at,expires_at,last_used_at FROM api_tokens WHERE user_id=$1 ORDER BY created_at DESC",
+      [(await user(req, "developer", CLI)).id],
+    ),
+  );
+  // Only narrow deploy tokens can be minted, and only by a session or a cli token.
+  app.post("/api/v1/developer/tokens", async (req) => {
+    const u = await user(req, "developer", CLI);
+    const body = z
+      .object({
+        name: z.string().min(1).max(60),
+        expiresInDays: z.number().int().min(1).max(365).default(90),
+      })
+      .strict()
+      .parse(req.body);
+    const count = (
+      await db.query(
+        "SELECT count(*)::int n FROM api_tokens WHERE user_id=$1 AND expires_at>$2",
+        [u.id, now()],
+      )
+    )[0].n;
+    if (count >= 20) fail(409, "Token limit reached; revoke unused tokens");
+    const issued = await issueToken(u.id, body.name, "deploy", body.expiresInDays);
+    await audit(u.id, "token-create");
+    return issued;
+  });
+  app.delete("/api/v1/developer/tokens/current", async (req) => {
+    await user(req, "developer", DEPLOY);
+    const bearer = req.headers.authorization;
+    if (!bearer?.startsWith("Bearer ft_"))
+      fail(400, "Send the token to revoke as a Bearer credential");
+    await db.query("DELETE FROM api_tokens WHERE token_hash=$1", [
+      sha(bearer!.slice(7)),
+    ]);
+    return { revoked: true };
+  });
+  app.delete("/api/v1/developer/tokens/:id", async (req) => {
+    const u = await user(req, "developer", CLI);
+    const rows = await db.query(
+      "DELETE FROM api_tokens WHERE id=$1 AND user_id=$2 RETURNING id",
+      [id(req), u.id],
+    );
+    if (!rows[0]) fail(404, "Token not found");
+    await audit(u.id, "token-revoke");
+    return { revoked: true };
   });
   const catalogSql = `SELECT a.*,u.name creator,v.id version_id,v.semver,v.manifest FROM apps a JOIN users u ON u.id=a.developer_id JOIN releases r ON r.app_id=a.id JOIN versions v ON v.id=r.version_id WHERE a.status='active' AND u.active=true AND v.review_status='approved'`;
   app.get("/api/v1/catalog", async (req) => {
@@ -589,6 +754,8 @@ export async function createApp(
             "Archive developer apps with support before account deletion",
           );
         await tx.query("DELETE FROM auth_sessions WHERE user_id=$1", [uid]);
+        await tx.query("DELETE FROM api_tokens WHERE user_id=$1", [uid]);
+        await tx.query("DELETE FROM device_codes WHERE user_id=$1", [uid]);
         await tx.query("DELETE FROM users WHERE id=$1", [uid]);
       }
     });
@@ -600,11 +767,11 @@ export async function createApp(
   app.get("/api/v1/developer/apps", async (req) =>
     db.query(
       "SELECT a.*,(SELECT count(*) FROM versions v WHERE v.app_id=a.id) version_count FROM apps a WHERE developer_id=$1 ORDER BY created_at DESC",
-      [(await user(req, "developer")).id],
+      [(await user(req, "developer", DEPLOY)).id],
     ),
   );
   app.post("/api/v1/developer/apps", async (req) => {
-    const u = await user(req, "developer");
+    const u = await user(req, "developer", DEPLOY);
     const body = listingSchema.parse(req.body);
     const aid = randomUUID();
     await db.query(
@@ -615,14 +782,14 @@ export async function createApp(
     return { id: aid, ...body };
   });
   app.get("/api/v1/developer/apps/:id/versions", async (req) => {
-    await own(req, id(req));
+    await own(req, id(req), DEPLOY);
     return db.query(
       "SELECT v.id,v.semver,v.bundle_hash,v.manifest,v.review_status,v.review_reason,v.created_at,EXISTS(SELECT 1 FROM releases r WHERE r.app_id=v.app_id AND r.version_id=v.id) AS published FROM versions v WHERE v.app_id=$1 ORDER BY v.created_at DESC",
       [id(req)],
     );
   });
   app.post("/api/v1/developer/apps/:id/upload", async (req) => {
-    const { u, a } = await own(req, id(req));
+    const { u, a } = await own(req, id(req), DEPLOY);
     const body = z
       .object({ zipBase64: z.string().max(2800000) })
       .parse(req.body);
@@ -653,7 +820,7 @@ export async function createApp(
   app.post(
     "/api/v1/developer/apps/:id/versions/:vid/submit-review",
     async (req) => {
-      const { u } = await own(req, id(req));
+      const { u } = await own(req, id(req), DEPLOY);
       const rows = await db.query(
         "UPDATE versions SET review_status=$1 WHERE id=$2 AND app_id=$3 AND review_status=$4 RETURNING id",
         ["pending", id(req, "vid"), id(req), "validated"],
@@ -665,7 +832,7 @@ export async function createApp(
     },
   );
   app.post("/api/v1/developer/apps/:id/release", async (req) => {
-    const { u } = await own(req, id(req));
+    const { u } = await own(req, id(req), CLI);
     const body = z.object({ versionId: z.string() }).parse(req.body);
     await db.transaction(async (tx) => {
       const apps = await tx.query(
@@ -690,7 +857,7 @@ export async function createApp(
     return { published: true };
   });
   app.post("/api/v1/developer/apps/:id/pause", async (req) => {
-    const { u } = await own(req, id(req));
+    const { u } = await own(req, id(req), CLI);
     await db.query("DELETE FROM releases WHERE app_id=$1", [id(req)]);
     await db.query("UPDATE sessions SET expires_at=0 WHERE app_id=$1", [
       id(req),
@@ -699,7 +866,7 @@ export async function createApp(
     return { paused: true };
   });
   app.get("/api/v1/developer/apps/:id/analytics", async (req) => {
-    await own(req, id(req));
+    await own(req, id(req), CLI);
     return {
       versions: await db.query(
         "SELECT v.id,v.semver,count(DISTINCT s.id)::int starts,count(DISTINCT s.subject)::int users,count(DISTINCT e.id) FILTER(WHERE e.name IN('round_completed','task_completed'))::int completions FROM versions v LEFT JOIN sessions s ON s.version_id=v.id AND s.preview=false LEFT JOIN events e ON e.session_id=s.id WHERE v.app_id=$1 GROUP BY v.id,v.semver ORDER BY v.semver",
@@ -712,7 +879,7 @@ export async function createApp(
     };
   });
   app.get("/api/v1/developer/apps/:id/feedback", async (req) => {
-    await own(req, id(req));
+    await own(req, id(req), CLI);
     return db.query(
       "SELECT rating,body,version_id,created_at FROM feedback WHERE app_id=$1 ORDER BY created_at DESC LIMIT 100",
       [id(req)],

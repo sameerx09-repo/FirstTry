@@ -21,9 +21,10 @@ export class Database {
         ? new Pool({ connectionString: process.env.DATABASE_URL })
         : new PGlite(memory ? undefined : resolve(root, ".local/postgres"));
     const db = new Database(driver);
-    await db.exec(
-      await readFile(resolve(root, "infra/migrations/001_initial.sql"), "utf8"),
-    );
+    for (const file of ["001_initial.sql", "002_tokens.sql"])
+      await db.exec(
+        await readFile(resolve(root, "infra/migrations", file), "utf8"),
+      );
     return db;
   }
   async query<T extends Row = Row>(
